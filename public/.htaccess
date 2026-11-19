@@ -1,0 +1,63 @@
+# SPA fallback for Apache hosting — mirrors public/vercel.json's own
+# rewrite rule for Vercel. Client-side routes (e.g. /agent/dashboard) have
+# no matching file on disk, so without this Apache 404s on any direct link
+# or page refresh other than "/" itself; this sends every request that
+# isn't a real file/directory to index.html instead, letting React Router
+# take over from there.
+#
+# There is deliberately no /api reverse proxy here anymore — the app calls
+# the backend's absolute VITE_BACKEND_URI (https://backend.xclusiveoman.com)
+# directly from the browser (shared/api/backendUrl.js), authenticated via
+# the backend's own CORS (CORS_ORIGINS) and a SameSite=None;Secure refresh
+# cookie rather than a same-origin proxy trick. This host needs no
+# mod_proxy/mod_proxy_http/proxy-sendcl at all.
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Force HTTPS — the backend's refresh-token cookie is Secure in production
+  # (auth.controller.js#refreshCookieOptions), and browsers refuse to store a
+  # Secure cookie at all over a plain http:// connection, so login can never
+  # persist without this. ONLY deploy this once a real SSL/TLS certificate is
+  # actually active for this domain on the host — enabling it before that
+  # will make the site completely unreachable (redirect loop / connection
+  # failure on 443), not just break login.
+  RewriteCond %{HTTPS} off
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+  # Leave a request for index.html itself alone (avoids a redirect loop).
+  RewriteRule ^index\.html$ - [L]
+
+  # Real files/directories (JS/CSS/images/etc. under dist/) are served as-is.
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+
+  # Everything else falls back to index.html.
+  RewriteRule . /index.html [L]
+</IfModule>
+
+# Browser security headers — mirrors public/vercel.json's "headers" for
+# Apache hosting. Kept to rules that can't break the app:
+#   - framing only by this site (the itinerary PDF download frames our own
+#     print page), never by other sites (clickjacking);
+#   - no MIME sniffing; referrers trimmed to the origin cross-site;
+#   - browser features off except the microphone, which the support chat's
+#     voice notes use;
+#   - HTTPS-only for a year (the rewrite block above already forces HTTPS —
+#     only keep this once the SSL certificate is permanent).
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Content-Security-Policy "frame-ancestors 'self'; base-uri 'self'; object-src 'none'"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "camera=(self), geolocation=(), usb=(), microphone=(self)"
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+</IfModule>
+
+# The visa passport upload renders PDFs with pdf.js, whose worker ships as
+# an .mjs file — browsers only run it as a module script when it's served
+# with a JavaScript MIME type, which many Apache setups don't know for .mjs.
+<IfModule mod_mime.c>
+  AddType text/javascript .mjs
+</IfModule>
